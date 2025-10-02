@@ -1,88 +1,123 @@
 
-import os, io, json, importlib, tempfile, time, inspect
+
+from __future__ import annotations
+import io
+import os
+import sys
+import json
+import shutil
+import tempfile
+import subprocess
+from pathlib import Path
+from typing import List
+
 import streamlit as st
 
+st.set_page_config(page_title="PDF → JSON (via extract_debates.py)", page_icon="📄", layout="centered")
+st.title("📄 PDF → JSON Extractor")
+st.caption("Uses your existing extract_debates.py *as-is* (no changes).")
 
-os.environ.setdefault("PYTORCH_SDP_DISABLE", "1")
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
-st.set_page_config(page_title="PDF → JSON Extractor", layout="wide")
-st.title("PDF → JSON Extractor")
-st.caption("Drag & drop a PDF. This wraps your existing `extract_debates.py` without modifying it.")
+HERE = Path(__file__).resolve().parent
+EXTRACTOR_SRC = HERE / "extract_debates.py"
 
-@st.cache_resource(show_spinner=False)
-def load_core():
-    core = importlib.import_module("extract_debates")  
-    
-    if hasattr(core, "process_pdf_to_json"):
-        return core, "to_json_file"
-    if hasattr(core, "process_pdf"):
-        sig = inspect.signature(core.process_pdf)
-        
-        n_pos = sum(1 for p in sig.parameters.values()
-                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) and p.default is inspect._empty)
-        if n_pos >= 2:
-            return core, "process_pdf_writes_file"
-        return core, "process_pdf_returns_dict"
-    raise RuntimeError(
-        "Expected `extract_debates.py` to expose either:\n"
-        "  - process_pdf_to_json(pdf_path, out_path)\n"
-        "  - process_pdf(pdf_path, out_path)    # writes JSON file\n"
-        "  - process_pdf(pdf_path)              # returns a dict"
+if not EXTRACTOR_SRC.exists():
+    st.error("Could not find `extract_debates.py` next to this app. "
+             "Please ensure both files are in the same folder.")
+    st.stop()
+
+uploaded = st.file_uploader(
+    "Drag & drop a PDF here, or click to browse",
+    type=["pdf"],
+    accept_multiple_files=False,
+    help="Your file will be processed in a temporary sandbox folder."
+)
+
+st.markdown(
+    "> Tip: This app runs `python extract_debates.py` in a temporary working folder. "
+    "Whatever JSON that script writes will appear below for download."
+)
+
+if uploaded is None:
+    st.info("Upload a PDF to begin.")
+    st.stop()
+
+st.write(f"**Selected file:** {uploaded.name}")
+
+
+workdir = Path(tempfile.mkdtemp(prefix="extract_"))
+st.write(f"Working in: `{workdir}`")
+
+
+pdf_bytes = uploaded.read()
+(doc_path := workdir / "document").write_bytes(pdf_bytes)
+(doc_pdf_path := workdir / "document.pdf").write_bytes(pdf_bytes)
+
+
+shutil.copy2(EXTRACTOR_SRC, workdir / "extract_debates.py")
+
+
+before_files = {p.name for p in workdir.iterdir()}
+
+
+py_exe = sys.executable or "python"
+cmd = [py_exe, "-u", "extract_debates.py"]
+st.code(" ".join(cmd), language="bash")
+
+with st.spinner("Running your extractor…"):
+    proc = subprocess.run(
+        cmd,
+        cwd=str(workdir),
+        capture_output=True,
+        text=True
     )
 
-core, mode = load_core()
 
-file = st.file_uploader("Drop a PDF here", type=["pdf"])
-go = st.button("Extract", use_container_width=True, disabled=not file)
+st.subheader("Logs")
+logs = ""
+if proc.stdout:
+    logs += f"STDOUT:\n{proc.stdout}\n"
+if proc.stderr:
+    logs += f"\nSTDERR:\n{proc.stderr}\n"
+if not logs.strip():
+    logs = "(No output)"
+st.text_area("Process output", value=logs, height=240)
 
-if go and file:
-    with tempfile.TemporaryDirectory() as td:
-        pdf_path = os.path.join(td, file.name)
-        with open(pdf_path, "wb") as f:
-            f.write(file.read())
 
-        t0 = time.time()
-        with st.spinner("Extracting… (first run downloads models)"):
-            if mode == "to_json_file":
-                out_path = os.path.join(td, "output.json")
-                core.process_pdf_to_json(pdf_path, out_path)
-                json_bytes = open(out_path, "rb").read()
-            elif mode == "process_pdf_writes_file":
-                out_path = os.path.join(td, "output.json")
-                core.process_pdf(pdf_path, out_path)
-                json_bytes = open(out_path, "rb").read()
-            else:  
-                data = core.process_pdf(pdf_path)
-                json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        dt = time.time() - t0
+after_files = {p.name for p in workdir.iterdir()}
+new_files = [f for f in (after_files - before_files) if f.lower().endswith(".json")]
+new_files_paths = [workdir / f for f in sorted(new_files)]
 
-    st.success(f"Done in {dt:.1f}s")
+if proc.returncode != 0:
+    st.error(f"Extractor exited with code {proc.returncode}. "
+             "If no JSON was produced, check the logs above.")
+elif not new_files_paths:
+    st.warning("The script finished, but no new .json files were found in the working folder. "
+               "Check the logs above to see where it saved output (if any).")
+else:
+    st.success(f"Done! Found {len(new_files_paths)} JSON file(s).")
 
-    c1, c2 = st.columns([2,1], gap="large")
-    with c1:
-        st.subheader("Preview")
-        try:
-            st.json(json.loads(json_bytes.decode("utf-8", errors="ignore")), expanded=False)
-        except Exception as e:
-            st.warning(f"Could not render JSON preview: {e}")
-        st.caption(f"Size: ~{len(json_bytes)/1024:.1f} KB")
 
-    with c2:
-        st.subheader("Download")
+for path in new_files_paths:
+    st.markdown(f"**Output:** `{path.name}`")
+    try:
+        data = path.read_bytes()
         st.download_button(
-            "Download output.json",
-            data=json_bytes,
-            file_name="output.json",
-            mime="application/json",
-            use_container_width=True,
+            label=f"⬇️ Download {path.name}",
+            data=data,
+            file_name=path.name,
+            mime="application/json"
         )
+        
+        try:
+            preview = path.read_text(encoding="utf-8", errors="ignore")
+            if len(preview) > 1000:
+                preview = preview[:1000] + "…"
+            with st.expander(f"Preview {path.name}"):
+                st.code(preview, language="json")
+        except Exception:
+            pass
+    except Exception as e:
+        st.error(f"Could not read {path.name}: {e}")
 
-st.markdown("---")
-with st.expander("Notes"):
-    st.write(
-        "- First run is slower while models download.\n"
-        "- This UI **does not modify** your core script; it just imports it."
-    )
+st.caption("Temporary working folder will be cleaned up automatically by the OS.")
