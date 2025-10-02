@@ -35,7 +35,7 @@ uploaded = st.file_uploader(
 
 st.markdown(
     "> runs `python extract_debates.py` in a temporary working folder. "
-    "JSON that script will appear below for download or in the main folder of the document."
+    "JSON script will appear below for download or in the main folder of the document."
 )
 
 if uploaded is None:
