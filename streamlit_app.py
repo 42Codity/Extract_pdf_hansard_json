@@ -15,7 +15,7 @@ import streamlit as st
 
 st.set_page_config(page_title="PDF → JSON (via extract_debates.py)", page_icon="📄", layout="centered")
 st.title("📄 PDF → JSON Extractor")
-st.caption("Uses your existing extract_debates.py *as-is* (no changes).")
+st.caption("pdf file from hansard.")
 
 
 HERE = Path(__file__).resolve().parent
@@ -34,8 +34,8 @@ uploaded = st.file_uploader(
 )
 
 st.markdown(
-    "> Tip: This app runs `python extract_debates.py` in a temporary working folder. "
-    "Whatever JSON that script writes will appear below for download."
+    "> runs `python extract_debates.py` in a temporary working folder. "
+    "JSON that script will appear below for download or in the main folder of the document."
 )
 
 if uploaded is None:
