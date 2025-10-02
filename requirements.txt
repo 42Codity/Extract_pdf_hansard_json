@@ -1,0 +1,7 @@
+streamlit>=1.36
+pdfplumber>=0.10
+rapidfuzz>=3.6
+transformers>=4.41
+sentencepiece>=0.1.99
+accelerate>=0.31
+
